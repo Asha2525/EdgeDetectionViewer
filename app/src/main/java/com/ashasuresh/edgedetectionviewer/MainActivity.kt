@@ -2,6 +2,8 @@ package com.ashasuresh.edgedetectionviewer
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.Image
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -21,8 +23,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.ashasuresh.edgedetectionviewer.ui.theme.EdgeDetectionViewerTheme
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import org.opencv.android.OpenCVLoader
+import org.opencv.android.Utils
+import org.opencv.core.Mat
+import org.opencv.core.Size
+import org.opencv.imgproc.Imgproc
 
 class MainActivity : ComponentActivity() {
 
@@ -42,6 +51,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // ✅ Initialize OpenCV
+        if (!OpenCVLoader.initDebug()) {
+            Log.e("MainActivity", "Unable to load OpenCV")
+        } else {
+            Log.i("MainActivity", "OpenCV loaded successfully")
+        }
 
         cameraExecutor = Executors.newSingleThreadExecutor()
 
@@ -148,10 +164,37 @@ fun CameraPreviewScreen() {
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
                             .also { analysis ->
+                                // ✅ OpenCV Edge Detection Analyzer
                                 analysis.setAnalyzer(Executors.newSingleThreadExecutor()) { imageProxy ->
-                                    // Frame processing will happen here
-                                    Log.d("CameraPreview", "Frame: ${imageProxy.width}x${imageProxy.height}")
-                                    imageProxy.close()
+                                    try {
+                                        val bitmap = imageProxy.toBitmap()
+
+                                        if (bitmap != null) {
+                                            val mat = Mat()
+                                            Utils.bitmapToMat(bitmap, mat)
+
+                                            val grayMat = Mat()
+                                            Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_RGBA2GRAY)
+
+                                            val blurredMat = Mat()
+                                            Imgproc.GaussianBlur(grayMat, blurredMat, Size(5.0, 5.0), 1.5)
+
+                                            val edgesMat = Mat()
+                                            Imgproc.Canny(blurredMat, edgesMat, 50.0, 150.0)
+
+                                            Log.d("EdgeDetection", "Edges detected: ${edgesMat.cols()}x${edgesMat.rows()}")
+
+                                            // Cleanup
+                                            mat.release()
+                                            grayMat.release()
+                                            blurredMat.release()
+                                            edgesMat.release()
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e("EdgeDetection", "Error processing frame: ${e.message}")
+                                    } finally {
+                                        imageProxy.close()
+                                    }
                                 }
                             }
 
@@ -178,10 +221,37 @@ fun CameraPreviewScreen() {
             color = MaterialTheme.colorScheme.secondaryContainer
         ) {
             Text(
-                text = "✓ Camera Active | Step 3: Camera Preview Working",
+                text = "✓ Edge Detection Active | Processing frames...",
                 modifier = Modifier.padding(12.dp),
                 style = MaterialTheme.typography.bodyMedium
             )
         }
     }
+}
+
+// ✅ Helper function: Convert ImageProxy to Bitmap
+fun ImageProxy.toBitmap(): Bitmap? {
+    val yBuffer = planes[0].buffer // Y
+    val vuBuffer = planes[2].buffer // VU
+
+    val ySize = yBuffer.remaining()
+    val vuSize = vuBuffer.remaining()
+
+    val nv21 = ByteArray(ySize + vuSize)
+
+    yBuffer.get(nv21, 0, ySize)
+    vuBuffer.get(nv21, ySize, vuSize)
+
+    val yuvImage = android.graphics.YuvImage(
+        nv21,
+        android.graphics.ImageFormat.NV21,
+        this.width,
+        this.height,
+        null
+    )
+
+    val out = ByteArrayOutputStream()
+    yuvImage.compressToJpeg(android.graphics.Rect(0, 0, this.width, this.height), 100, out)
+    val imageBytes = out.toByteArray()
+    return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
 }
