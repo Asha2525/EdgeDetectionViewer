@@ -4,8 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.Image
-import android.os.Bundle
 import android.util.Log
+import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,29 +13,26 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.ashasuresh.edgedetectionviewer.ui.theme.EdgeDetectionViewerTheme
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
-import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var cameraExecutor: ExecutorService
     private var hasPermission by mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
@@ -58,8 +55,6 @@ class MainActivity : ComponentActivity() {
         } else {
             Log.i("MainActivity", "OpenCV loaded successfully")
         }
-
-        cameraExecutor = Executors.newSingleThreadExecutor()
 
         setContent {
             EdgeDetectionViewerTheme {
@@ -89,11 +84,6 @@ class MainActivity : ComponentActivity() {
             requestPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        cameraExecutor.shutdown()
-    }
 }
 
 @Composable
@@ -121,6 +111,7 @@ fun PermissionRequestScreen() {
 fun CameraPreviewScreen() {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = androidx.compose.ui.platform.LocalContext.current
+    val edgeBitmap = remember { mutableStateOf<Bitmap?>(null) }
 
     Column(
         modifier = Modifier.fillMaxSize()
@@ -164,11 +155,9 @@ fun CameraPreviewScreen() {
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
                             .also { analysis ->
-                                // ✅ OpenCV Edge Detection Analyzer
                                 analysis.setAnalyzer(Executors.newSingleThreadExecutor()) { imageProxy ->
                                     try {
                                         val bitmap = imageProxy.toBitmap()
-
                                         if (bitmap != null) {
                                             val mat = Mat()
                                             Utils.bitmapToMat(bitmap, mat)
@@ -177,21 +166,34 @@ fun CameraPreviewScreen() {
                                             Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_RGBA2GRAY)
 
                                             val blurredMat = Mat()
-                                            Imgproc.GaussianBlur(grayMat, blurredMat, Size(5.0, 5.0), 1.5)
+                                            Imgproc.GaussianBlur(
+                                                grayMat,
+                                                blurredMat,
+                                                org.opencv.core.Size(5.0, 5.0),
+                                                1.5
+                                            )
 
                                             val edgesMat = Mat()
                                             Imgproc.Canny(blurredMat, edgesMat, 50.0, 150.0)
 
-                                            Log.d("EdgeDetection", "Edges detected: ${edgesMat.cols()}x${edgesMat.rows()}")
+                                            // Convert edgesMat to Bitmap
+                                            val edgeBitmapTemp = Bitmap.createBitmap(
+                                                edgesMat.cols(),
+                                                edgesMat.rows(),
+                                                Bitmap.Config.ARGB_8888
+                                            )
+                                            Utils.matToBitmap(edgesMat, edgeBitmapTemp)
 
-                                            // Cleanup
+                                            // Update Compose state
+                                            edgeBitmap.value = edgeBitmapTemp
+
                                             mat.release()
                                             grayMat.release()
                                             blurredMat.release()
                                             edgesMat.release()
                                         }
                                     } catch (e: Exception) {
-                                        Log.e("EdgeDetection", "Error processing frame: ${e.message}")
+                                        Log.e("EdgeDetection", "Error: ${e.message}")
                                     } finally {
                                         imageProxy.close()
                                     }
@@ -215,13 +217,25 @@ fun CameraPreviewScreen() {
             }
         )
 
+        // 🖼️ Display the edge detection output
+        if (edgeBitmap.value != null) {
+            Image(
+                bitmap = edgeBitmap.value!!.asImageBitmap(),
+                contentDescription = "Edge Detection Output",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(300.dp)
+                    .padding(8.dp)
+            )
+        }
+
         // Status Bar
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.secondaryContainer
         ) {
             Text(
-                text = "✓ Edge Detection Active | Processing frames...",
+                text = "✓ Edge Detection Display Active | Showing processed edges in real-time",
                 modifier = Modifier.padding(12.dp),
                 style = MaterialTheme.typography.bodyMedium
             )
@@ -229,10 +243,10 @@ fun CameraPreviewScreen() {
     }
 }
 
-// ✅ Helper function: Convert ImageProxy to Bitmap
+// 🔧 Helper function: Convert ImageProxy to Bitmap
 fun ImageProxy.toBitmap(): Bitmap? {
-    val yBuffer = planes[0].buffer // Y
-    val vuBuffer = planes[2].buffer // VU
+    val yBuffer = planes[0].buffer
+    val vuBuffer = planes[2].buffer
 
     val ySize = yBuffer.remaining()
     val vuSize = vuBuffer.remaining()
@@ -249,8 +263,7 @@ fun ImageProxy.toBitmap(): Bitmap? {
         this.height,
         null
     )
-
-    val out = ByteArrayOutputStream()
+    val out = java.io.ByteArrayOutputStream()
     yuvImage.compressToJpeg(android.graphics.Rect(0, 0, this.width, this.height), 100, out)
     val imageBytes = out.toByteArray()
     return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
