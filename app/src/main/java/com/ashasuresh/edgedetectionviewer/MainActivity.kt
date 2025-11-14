@@ -174,7 +174,8 @@ fun CameraPreviewScreen() {
                                             )
 
                                             val edgesMat = Mat()
-                                            Imgproc.Canny(blurredMat, edgesMat, 50.0, 150.0)
+                                            NativeBridge.processEdges(mat.nativeObjAddr, edgesMat.nativeObjAddr)
+
 
                                             // Convert edgesMat to Bitmap
                                             val edgeBitmapTemp = Bitmap.createBitmap(
